@@ -1,124 +1,114 @@
-# Bài Tập: Xử lý thời gian thực với Webhook và Kafka
+# Facebook Page Event Pipeline
 
-Dự án này bao gồm một hệ thống hướng sự kiện (Event-driven) có khả năng xử lý thời gian thực các sự kiện từ Facebook Page (như bình luận, tin nhắn), lọc spam và phân tích ngữ nghĩa (Intent & Sentiment) bằng AI.
+Hệ thống này là một pipeline xử lý sự kiện theo hướng event-driven cho Facebook Page.
+Nó gồm 3 service chính chạy bằng .NET, Kafka và SQLite để xử lý comment, reply, ẩn bình luận, retry và dead-letter.
 
-## 🏗 Kiến trúc dự án
-Dự án được chia thành 2 microservices chính:
-1. **Webhook Service (Node.js)**
-   - Đóng vai trò là cổng giao tiếp (API Gateway/Ingress) nhận dữ liệu từ Facebook Webhook.
-   - Xác thực request, chuẩn hóa (normalize) payload của Facebook về một schema chung.
-   - Publish sự kiện vào Kafka topic: `raw_events`.
-2. **Core Service (.NET 9)**
-   - Chạy nền (Background Service) Consume tin nhắn từ Kafka.
-   - Pipeline xử lý:
-     - Lọc Spam (chứa URL, lặp từ).
-     - Phân tích Intent (Ý định) và Sentiment (Cảm xúc) thông qua AI.
-     - Tự động ra quyết định (ẩn comment, gửi thông báo,...).
+## Kiến trúc hiện tại
 
-## 🚀 Yêu cầu hệ thống
-- **Docker** & **Docker Compose** (để chạy Kafka và Zookeeper)
-- **Node.js** (v18 trở lên)
-- **.NET 9.0 SDK**
+### 1. `core-service`
+- Nhận raw events từ topic `raw_events`.
+- Phân loại comment bằng rule + AI.
+- Phát lệnh sang topic `reply_commands`.
+- Khi phát hiện spam, có thể tạo lệnh `hide_comment`.
+- Ghi audit vào SQLite.
+- Có rate limit nội bộ cho người dùng/commenter.
 
-## ⚙️ Hướng dẫn cài đặt và khởi chạy
+### 2. `backend-api`
+- Nhận lệnh từ Kafka và gọi Facebook Graph API.
+- Xử lý reply comment, hide comment, và các action khác.
+- Có circuit breaker để giảm lỗi khi Facebook API không ổn định.
+- Ghi audit và trạng thái xử lý vào SQLite.
 
-### Bước 1: Khởi động Kafka Cluster
-Mở terminal tại thư mục gốc của dự án và chạy lệnh sau để khởi động Kafka và Kafka UI:
-docker-compose up -d
-*Lưu ý: Mở Docker Desktop trước khi chạy.*
+### 3. `retry-service`
+- Consume sự kiện lỗi từ topic `send_failed`.
+- Lưu trạng thái retry vào SQLite.
+- Retry theo backoff cấu hình sẵn.
+- Khi vượt số lần thử, đẩy sang topic `dead_letter`.
+- Có alerting và metrics tùy chọn.
 
-Sau khi Container đã chạy, tạo topic `raw_events` cho Kafka:
-```bash
-docker exec kafka kafka-topics --create --topic raw_events --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1
+## Kafka topics
+- `raw_events`: event đầu vào từ Facebook hoặc dữ liệu mô phỏng.
+- `reply_commands`: lệnh phản hồi hoặc hide comment.
+- `send_failed`: message lỗi cần retry.
+- `dead_letter`: message thất bại cuối cùng.
+
+## Yêu cầu hệ thống
+- .NET SDK tương ứng với các project trong workspace
+- Kafka và Kafka UI
+- SQLite
+- Visual Studio hoặc terminal `pwsh`
+
+## Cấu hình
+
+### `fb_api/services/core-service/appsettings.json`
+- `AI:Gemini:ApiKey`
+- `Kafka:BootstrapServers`
+- `Kafka:Topic`
+- `Kafka:FailedTopic`
+- `Kafka:ReplyCommandsTopic`
+
+### `fb_api/services/backend-api/appsettings.json`
+- `Facebook:PageAccessToken`
+- `Facebook:GraphVersion`
+- `Kafka:BootstrapServers`
+- `Kafka:Topic`
+- `Kafka:FailedTopic`
+
+### `fb_api/services/retry-service/appsettings.json`
+- `Kafka:FailedTopic` = `send_failed`
+- `Kafka:DeadLetterTopic` = `dead_letter`
+- `Retry:MaxAttempts`
+- `Retry:BackoffSeconds`
+- `Retry:PollIntervalMs`
+- `Alerts:EnablePrometheusMetrics`
+
+Lưu ý: secret như Facebook token hoặc API key không nên commit vào repo. Nên dùng biến môi trường hoặc user-secrets.
+
+## Chạy hệ thống
+
+### 1. Khởi động Kafka và Kafka UI
+Chạy Docker Compose ở thư mục gốc của dự án.
+
+### 2. Chạy `core-service`
+Mở project `fb_api/services/core-service` trong Visual Studio hoặc chạy bằng .NET.
+
+### 3. Chạy `backend-api`
+Mở project `fb_api/services/backend-api` và chạy web API.
+
+### 4. Chạy `retry-service`
+Mở project `fb_api/services/retry-service` và chạy background worker.
+
+## Test nhanh bằng Kafka UI
+
+### Test retry-service
+Produce message vào topic `send_failed` với payload có `command_id` và `rawEvent`.
+
+Ví dụ:
+```json
+{
+  "failedId": "fail-12345",
+  "command_id": "cmd-abcd-5678",
+  "sourceTopic": "reply_commands",
+  "errorType": "TimeoutException",
+  "errorMessage": "Failed to connect to backend Facebook API",
+  "failedAt": "2026-06-01T07:23:04.488Z",
+  "retryCount": 0,
+  "status": "pending",
+  "rawEvent": "{\"comment_id\":\"122102358038599871_1313333986965114\",\"message\":\"Shop hỗ trợ rất nhanh\"}"
+}
 ```
 
-### Bước 2: Chạy Webhook Service (Node.js)
-Mở một terminal mới, chuyển vào thư mục `webhook-service`:
-```bash
-cd webhook-service
-npm install
-npm start
-```
-*Service sẽ chạy ở port mặc định (thường là 3001) chờ nhận Webhook.*
+Sau đó kiểm tra topic `dead_letter`.
 
-### Bước 3: Chạy Core Service (.NET 9)
-Mở một terminal mới, chuyển vào thư mục ứng dụng .NET:
-```bash
-cd "FacebookAPI - PageAPI"
-dotnet build
-dotnet run
-```
-*Service sẽ bắt đầu kết nối với Kafka và chờ các event đến.*
+## Test page thật
+1. Chạy đủ 3 service.
+2. Đảm bảo `Facebook:PageAccessToken` là token thật nhưng không lưu cứng trong repo.
+3. Comment thật trên page.
+4. Quan sát log ở `core-service`, `backend-api`, và `retry-service`.
+5. Kiểm tra Kafka UI ở các topic `raw_events`, `reply_commands`, `send_failed`, `dead_letter`.
 
----
-
-## 🧪 Hướng dẫn kiểm thử (Bằng Fake Dữ liệu - Mock Data)
-Do việc cấu hình Facebook App đòi hỏi publish lên server có HTTPS (ngrok, domain thật), trong môi trường dev và phục vụ chấm bài, các bạn có thể dùng **Fake Feed (Mock Data)**. 
-
-Gửi trực tiếp các POST Request giả lập Webhook của Facebook vào `webhook-service` thông qua Postman, hoặc dùng lệnh `curl` dưới đây (Mở terminal mới để test):
-
-### 1. Test Comment Bình thường (Hỏi giá)
-```bash
-curl -X POST http://localhost:3001/webhook \
-  -H "Content-Type: application/json" \
-  -d '{
-    "object": "page",
-    "entry": [{
-      "id": "123456789",
-      "time": 1690000000,
-      "changes": [{
-        "value": {
-          "from": { "id": "987654321", "name": "Nguyễn Văn Test" },
-          "item": "comment",
-          "message": "Shop ơi cái này giá bao nhiêu vậy?"
-        },
-        "field": "feed"
-      }]
-    }]
-  }'
-```
-*Kỳ vọng: Core Service bên .NET sẽ in ra log "Hỏi giá", Sentiment "Trung tính".*
-
-### 2. Test Comment Khiếu nại
-```bash
-curl -X POST http://localhost:3001/webhook \
-  -H "Content-Type: application/json" \
-  -d '{
-    "object": "page",
-    "entry": [{
-      "id": "123456789",
-      "time": 1690000000,
-      "changes": [{
-        "value": {
-          "from": { "id": "987654321", "name": "Người mua bức xúc" },
-          "item": "comment",
-          "message": "Mình chưa nhận được hàng, làm ăn chán quá!"
-        },
-        "field": "feed"
-      }]
-    }]
-  }'
-```
-*Kỳ vọng: Core Service bên .NET in ra log "Khiếu nại", Sentiment "Tiêu cực" kèm quyết định Cần tạo ticket hỗ trợ khẩn cấp.*
-
-### 3. Test Comment Spam (Chứa Link)
-```bash
-curl -X POST http://localhost:3001/webhook \
-  -H "Content-Type: application/json" \
-  -d '{
-    "object": "page",
-    "entry": [{
-      "id": "123456789",
-      "time": 1690000000,
-      "changes": [{
-        "value": {
-          "from": { "id": "Spammer123", "name": "Bot Spam" },
-          "item": "comment",
-          "message": "Click vào link để nhận quà: http://scam-link.vn"
-        },
-        "field": "feed"
-      }]
-    }]
-  }'
-```
-*Kỳ vọng: Core Service bên .NET sẽ chặn ngay ở bước 1 và in ra Warning "Spam detected...".*
+## Lưu ý
+- Nếu comment spam, core-service có thể phát lệnh ẩn bình luận.
+- Nếu comment như “Mình chờ quá lâu”, hệ thống có thể trả lời xin lỗi thay vì bỏ qua.
+- Nếu Facebook API lỗi, backend-api có circuit breaker.
+- Nếu retry-service hết số lần thử, message sẽ sang `dead_letter`.
