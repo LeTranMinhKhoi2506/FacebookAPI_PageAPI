@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="CoreService/CoreService.csproj" />
+  <Project Path="FacebookAPI - PageAPI/FacebookAPI - PageAPI.csproj" />
+</Solution>

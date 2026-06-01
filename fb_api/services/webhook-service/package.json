@@ -1,0 +1,14 @@
+{
+  "name": "webhook-service",
+  "version": "1.0.0",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node src/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "express": "^4.22.1",
+    "kafkajs": "^2.2.4"
+  }
+}
