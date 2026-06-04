@@ -478,7 +478,7 @@ public class KafkaConsumerService : BackgroundService
                 var commandId = CreateCommandId(rawEvent);
                 command.Parameters.AddWithValue("$CommandId", commandId);
                 command.Parameters.AddWithValue("$CommentId", (object?)commentId ?? DBNull.Value);
-                command.Parameters.AddWithValue("$CommandType", (object?)commandType ?? DBNull.Value);
+                command.Parameters.AddWithValue("$CommandType", (object?)commandType ?? "unknown");
                 command.Parameters.AddWithValue("$Message", (object?)message ?? DBNull.Value);
                 command.Parameters.AddWithValue("$Sentiment", status == "failed" ? DBNull.Value : (object?)sentimentOrError ?? DBNull.Value);
                 command.Parameters.AddWithValue("$Intent", (object?)intent ?? DBNull.Value);

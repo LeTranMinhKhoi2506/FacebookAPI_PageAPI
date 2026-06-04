@@ -73,8 +73,8 @@ namespace RetryService.Services
             _consumer.Subscribe(_failedTopic);
             _logger.LogInformation("Subscribed to Kafka topic: {Topic}", _failedTopic);
 
-            var consumeTask = ConsumeFailedEventsAsync(stoppingToken);
-            var retryTask = RetryPendingEventsAsync(stoppingToken);
+            var consumeTask = Task.Run(() => ConsumeFailedEventsAsync(stoppingToken), stoppingToken);
+            var retryTask = Task.Run(() => RetryPendingEventsAsync(stoppingToken), stoppingToken);
 
             try
             {
@@ -134,6 +134,10 @@ namespace RetryService.Services
                     _alertManager.SetPendingRetries(pendingCount);
 
                     var readyStates = await _retryRepository.GetReadyForRetryAsync();
+                    if (pendingCount > 0)
+                    {
+                        _logger.LogInformation("Retry pending count: {PendingCount}, Ready for retry: {ReadyCount}", pendingCount, readyStates.Count);
+                    }
                     foreach (var state in readyStates)
                     {
                         if (stoppingToken.IsCancellationRequested)
